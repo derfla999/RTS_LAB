@@ -1,0 +1,123 @@
+#!/bin/sh
+
+restore() {
+  test "$SAVE" && stty "$SAVE"
+  kill $! 2>/dev/null
+}
+
+error() {
+  restore
+  echo "$0: $1"
+  exit 1
+}
+
+sigint() {
+  restore
+  exit 0
+}
+
+exists() {
+  test -e "$1" || error "$1: No such file"
+}
+
+srec() {
+  exists "$1"
+  test "$(file -b "$1" | grep "Motorola S-Record")" ||
+    error "$1: Not a Motorola S-Record file"
+}
+
+dev() {
+  trap sigint INT
+  cat "$1" &
+  stty "$F" "$1" 115200 raw -echo -parenb cs8 -cstopb || exit 1
+  echo "Welcome! For help, type '?'"
+  SAVE=$(stty -g)
+  stty -echo -icanon
+  while true
+  do
+    INPUT=$(dd ibs=1 count=1 2>/dev/null)
+    case $INPUT in
+      "?")
+        echo "|----------------------------------------------------------|"
+        echo "|To load the .s19 file into memory and start the program:  |"
+        echo "|  1) Press the 'Reset' button on the MD407                |"
+        echo "|  2) Type '>' and wait for loading to complete            |"
+        echo "|  3) Type 'go' and press Enter to start the program       |"
+        echo "|These steps can be repeated without restarting the console|"
+        echo "|----------------------------------------------------------|"
+        echo "|To communicate with the running program:                  |"
+        echo "|  Carefully plant forehead on keyboard                    |"
+        echo "|----------------------------------------------------------|"
+        echo "|To exit:                                                  |"
+        echo "|  Send SIGINT (usually Ctrl+C)                            |"
+        echo "|----------------------------------------------------------|"
+        ;;
+      ">")
+        exists "$1"
+        srec "$SREC"
+        printf "load\n" > "$1" && cat "$SREC" > "$1"
+        ;;
+      *)
+        test "$INPUT" && printf "%c" "$INPUT" > "$1"
+        test "$INPUT" || echo "" > "$1"
+        ;;
+    esac
+  done
+}
+
+devs() {
+  test $# -eq 1 && {
+    echo "Serial device found: $1 (auto-selected)"
+    dev "$1"
+  }
+  COUNT=$((0))
+  echo "Please select a device:"
+  for d in "$@"
+  do
+    echo "${COUNT}) $d"
+    COUNT=$((COUNT + 1))
+  done
+  echo ""
+  printf "#? "
+  read -r REPLY
+  INDEX=$(printf "%d" "$REPLY" 2>/dev/null) || error "Non-numeric entry"
+  test "$INDEX" -lt 0 && error "Invalid index: $INDEX"
+  test "$INDEX" -ge $# && error "Invalid index: $INDEX"
+  COUNT=$((0))
+  for d in "$@"
+  do
+    test "$INDEX" -eq $COUNT && dev "$d"
+    COUNT=$((COUNT + 1))
+  done
+}
+
+test $# -eq 1 || error "Expected 1 argument, got $#"
+
+srec "$1"
+
+SREC=$1
+KERNEL=$(uname)
+
+case $KERNEL in
+  "Linux")
+    F="-F"
+    for d in /dev/ttyUSB*
+    do
+      test -e "$d" || error "No serial devices found"
+      break
+    done
+    devs /dev/ttyUSB*
+    ;;
+  "Darwin")
+    F="-f"
+    for d in /dev/cu.usbserial*
+    do
+      test -e "$d" || error "No serial devices found"
+      break
+    done
+    devs /dev/cu.usbserial*
+    ;;
+  *)
+    error "Unexpected kernel: $KERNEL"
+    ;;
+esac
